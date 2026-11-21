@@ -197,7 +197,7 @@ def matching_photos(query):
 def json_response(status, payload):
     return {
         "statusCode": status,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"},
         "body": json.dumps(payload),
     }
 
