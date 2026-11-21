@@ -1,0 +1,50 @@
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  install:
+    runtime-versions:
+      python: "3.13"
+
+  build:
+    commands:
+      - |
+        set -euo pipefail
+
+        index_config="$(aws lambda get-function-configuration --function-name index-photos           --query '[PackageType,Handler]' --output text)"
+        read -r index_package index_handler <<< "$index_config"
+        if [[ "$index_package" != "Zip" || "$index_handler" != "lambda_function.lambda_handler" ]]; then
+          echo "index-photos must use a ZIP package and handler lambda_function.lambda_handler." >&2
+          exit 1
+        fi
+
+        search_config="$(aws lambda get-function-configuration --function-name search-photos           --query '[PackageType,Runtime,Architectures[0],Handler]' --output text)"
+        read -r search_package search_runtime search_arch search_handler <<< "$search_config"
+        if [[ "$search_package" != "Zip" || "$search_runtime" != "python3.13" ||
+              "$search_arch" != "x86_64" || "$search_handler" != "search_photos.lambda_handler" ||
+              "$(uname -m)" != "x86_64" ]]; then
+          echo "search-photos requires ZIP, Python 3.13, x86_64, and handler search_photos.lambda_handler." >&2
+          echo "Run CodeBuild on an x86_64 Linux image. Check the Lambda settings before proceeding." >&2
+          exit 1
+        fi
+
+        python -m py_compile index-photos/lambda_function.py search-photos/search_photos.py
+        mkdir -p .build/search-package
+        zip -j .build/index-photos.zip index-photos/lambda_function.py
+        python -m pip install --only-binary=:all: --no-compile           --target .build/search-package -r search-photos/requirements.txt
+        cp search-photos/search_photos.py .build/search-package/
+        (cd .build/search-package && zip -qr ../search-photos.zip .)
+
+        for function_name in index-photos search-photos; do
+          aws lambda update-function-code --function-name "$function_name"             --zip-file "fileb://.build/$function_name.zip"             --query '{FunctionName:FunctionName,CodeSha256:CodeSha256}' --output json
+          aws lambda wait function-updated --function-name "$function_name"
+          echo "Deployed $function_name"
+        done
+
+artifacts:
+  base-directory: .build
+  files:
+    - index-photos.zip
+    - search-photos.zip
